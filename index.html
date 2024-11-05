@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Object Position Tracker</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        #chart-container {
+            width: 70%;
+            height: 90%;
+        }
+    </style>
+</head>
+<body>
+    <h2>Object Position Tracking using TDoA</h2>
+    <div id="chart-container">
+        <div id="positionChart"></div>
+    </div>
+
+    <script>
+        const c = 3e8; // Швидкість світла (м/с)
+        
+        // Координати базових станцій
+        const baseStations = [
+            { x: 0, y: 0, id: 'source1' },
+            { x: 100000, y: 0, id: 'source2' },
+            { x: 0, y: 100000, id: 'source3' }
+        ];
+
+        let objectPosition = { x: 50000, y: 50000 }; // Початкове припущення
+
+        // Ініціалізація графіка
+        function initChart() {
+            const baseX = baseStations.map(station => station.x);
+            const baseY = baseStations.map(station => station.y);
+
+            Plotly.newPlot('positionChart', [{
+                x: baseX,
+                y: baseY,
+                mode: 'markers',
+                marker: { color: 'blue', size: 10 },
+                name: 'Base Stations'
+            }, {
+                x: [objectPosition.x],
+                y: [objectPosition.y],
+                mode: 'markers',
+                marker: { color: 'red', size: 10 },
+                name: 'Object Position'
+            }], {
+                xaxis: { title: 'X (m)', range: [-10000, 110000] },
+                yaxis: { title: 'Y (m)', range: [-10000, 110000] },
+                title: 'Object and Base Stations Position'
+            });
+        }
+
+        // Оновлення графіка
+        function updateChart(objectPos) {
+            Plotly.update('positionChart', {
+                x: [[objectPos.x]],
+                y: [[objectPos.y]]
+            }, {}, [1]);
+        }
+
+        // Обчислення часів TDoA
+        function calculateTdoaTimes(receivedData) {
+            const times = receivedData.map(data => data.receivedAt);
+            const deltaT12 = (times[0] - times[1]) * 1e-3; // Перетворення в секунди
+            const deltaT13 = (times[0] - times[2]) * 1e-3;
+            return [deltaT12, deltaT13];
+        }
+
+        // Функція градієнтного спуску
+        function gradientDescent(tdoaErrorFunc, initialGuess, baseStations, deltaT, speedOfLight, learningRate = 0.01, maxIterations = 1000, tolerance = 1e-6) {
+            let [x, y] = initialGuess;
+            let prevLoss = Infinity;
+
+            for (let iteration = 0; iteration < maxIterations; iteration++) {
+                const loss = lossFunction([x, y], tdoaErrorFunc, baseStations, deltaT, speedOfLight);
+                if (Math.abs(prevLoss - loss) < tolerance) break;
+                prevLoss = loss;
+
+                const delta = 1e-6;
+                const lossX = lossFunction([x + delta, y], tdoaErrorFunc, baseStations, deltaT, speedOfLight);
+                const gradX = (lossX - loss) / delta;
+
+                const lossY = lossFunction([x, y + delta], tdoaErrorFunc, baseStations, deltaT, speedOfLight);
+                const gradY = (lossY - loss) / delta;
+
+                x -= learningRate * gradX;
+                y -= learningRate * gradY;
+            }
+            return [x, y];
+        }
+
+        // Функція помилки TDoA
+        function tdoaError(params, x1, y1, x2, y2, x3, y3, deltaT12, deltaT13, c) {
+            const [x, y] = params;
+            const d1 = Math.sqrt((x - x1) ** 2 + (y - y1) ** 2);
+            const d2 = Math.sqrt((x - x2) ** 2 + (y - y2) ** 2);
+            const d3 = Math.sqrt((x - x3) ** 2 + (y - y3) ** 2);
+
+            const deltaT12Calc = (d1 - d2) / c;
+            const deltaT13Calc = (d1 - d3) / c;
+
+            return [(deltaT12Calc - deltaT12), (deltaT13Calc - deltaT13)];
+        }
+
+        // Функція втрат
+        function lossFunction(params, tdoaErrorFunc, baseStations, deltaT, c) {
+            const [x, y] = params;
+            const [deltaT12, deltaT13] = deltaT;
+            const [x1, y1] = [baseStations[0].x, baseStations[0].y];
+            const [x2, y2] = [baseStations[1].x, baseStations[1].y];
+            const [x3, y3] = [baseStations[2].x, baseStations[2].y];
+
+            const errors = tdoaErrorFunc([x, y], x1, y1, x2, y2, x3, y3, deltaT12, deltaT13, c);
+            return errors[0] ** 2 + errors[1] ** 2;
+        }
+
+        // Підключення до WebSocket
+        const socket = new WebSocket('ws://localhost:4002');
+        socket.onopen = () => console.log('Connected to WebSocket server');
+        
+        let receivedData = [];
+        
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            console.log('Received data:', data);
+            receivedData.push(data);
+
+            if (receivedData.length === 3) {
+                const deltaT = calculateTdoaTimes(receivedData);
+                const [xOpt, yOpt] = gradientDescent(
+                    tdoaError,
+                    [50000, 50000],
+                    baseStations,
+                    deltaT,
+                    c,
+                    0.1 // Adjust learning rate as needed
+                );
+
+                objectPosition = { x: xOpt, y: yOpt };
+                updateChart(objectPosition);
+                receivedData = [];
+            }
+        };
+
+        socket.onclose = () => console.log('WebSocket connection closed');
+        socket.onerror = (error) => console.error('WebSocket error:', error);
+
+        initChart();
+    </script>
+</body>
+</html>
