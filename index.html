@@ -27,83 +27,54 @@
     </div>
 
     <script>
-        const c = 3e8; // Швидкість світла (м/с)
-        
-        // Координати базових станцій
+        // Base stations coordinates
         const baseStations = [
             { x: 0, y: 0, id: 'source1' },
             { x: 100000, y: 0, id: 'source2' },
             { x: 0, y: 100000, id: 'source3' }
         ];
 
-        let objectPosition = { x: 50000, y: 50000 }; // Початкове припущення
+        let objectPosition = { x: 50000, y: 50000 }; // Начальная точка объекта
 
-        // Ініціалізація графіка
+        // Initialize the chart
         function initChart() {
             const baseX = baseStations.map(station => station.x);
             const baseY = baseStations.map(station => station.y);
 
-            Plotly.newPlot('positionChart', [{
-                x: baseX,
-                y: baseY,
-                mode: 'markers',
-                marker: { color: 'blue', size: 10 },
-                name: 'Base Stations'
-            }, {
-                x: [objectPosition.x],
-                y: [objectPosition.y],
-                mode: 'markers',
-                marker: { color: 'red', size: 10 },
-                name: 'Object Position'
-            }], {
+            Plotly.newPlot('positionChart', [
+                {
+                    x: baseX,
+                    y: baseY,
+                    mode: 'markers',
+                    marker: { color: 'blue', size: 10 },
+                    name: 'Base Stations'
+                },
+                {
+                    x: [objectPosition.x],
+                    y: [objectPosition.y],
+                    mode: 'markers',
+                    marker: { color: 'red', size: 10 },
+                    name: 'Object Position'
+                }
+            ], {
                 xaxis: { title: 'X (m)', range: [-10000, 110000] },
                 yaxis: { title: 'Y (m)', range: [-10000, 110000] },
                 title: 'Object and Base Stations Position'
             });
         }
 
-        // Оновлення графіка
-        function updateChart(objectPos) {
+        // Update the object position on the chart
+        function updateChart(newPosition) {
             Plotly.update('positionChart', {
-                x: [[objectPos.x]],
-                y: [[objectPos.y]]
-            }, {}, [1]);
+                x: [[newPosition.x]],
+                y: [[newPosition.y]]
+            }, {}, [1]); // Update the second trace (Object Position)
         }
 
-        // Обчислення часів TDoA
-        function calculateTdoaTimes(receivedData) {
-            const times = receivedData.map(data => data.receivedAt);
-            const deltaT12 = (times[0] - times[1]) * 1e-3; // Перетворення в секунди
-            const deltaT13 = (times[0] - times[2]) * 1e-3;
-            return [deltaT12, deltaT13];
-        }
-
-        // Функція градієнтного спуску
-        function gradientDescent(tdoaErrorFunc, initialGuess, baseStations, deltaT, speedOfLight, learningRate = 0.01, maxIterations = 1000, tolerance = 1e-6) {
-            let [x, y] = initialGuess;
-            let prevLoss = Infinity;
-
-            for (let iteration = 0; iteration < maxIterations; iteration++) {
-                const loss = lossFunction([x, y], tdoaErrorFunc, baseStations, deltaT, speedOfLight);
-                if (Math.abs(prevLoss - loss) < tolerance) break;
-                prevLoss = loss;
-
-                const delta = 1e-6;
-                const lossX = lossFunction([x + delta, y], tdoaErrorFunc, baseStations, deltaT, speedOfLight);
-                const gradX = (lossX - loss) / delta;
-
-                const lossY = lossFunction([x, y + delta], tdoaErrorFunc, baseStations, deltaT, speedOfLight);
-                const gradY = (lossY - loss) / delta;
-
-                x -= learningRate * gradX;
-                y -= learningRate * gradY;
-            }
-            return [x, y];
-        }
-
-        // Функція помилки TDoA
+        // TDoA error function
         function tdoaError(params, x1, y1, x2, y2, x3, y3, deltaT12, deltaT13, c) {
             const [x, y] = params;
+
             const d1 = Math.sqrt((x - x1) ** 2 + (y - y1) ** 2);
             const d2 = Math.sqrt((x - x2) ** 2 + (y - y2) ** 2);
             const d3 = Math.sqrt((x - x3) ** 2 + (y - y3) ** 2);
@@ -111,46 +82,90 @@
             const deltaT12Calc = (d1 - d2) / c;
             const deltaT13Calc = (d1 - d3) / c;
 
-            return [(deltaT12Calc - deltaT12), (deltaT13Calc - deltaT13)];
+            const error1 = deltaT12Calc - deltaT12;
+            const error2 = deltaT13Calc - deltaT13;
+
+            return [error1, error2];
         }
 
-        // Функція втрат
-        function lossFunction(params, tdoaErrorFunc, baseStations, deltaT, c) {
-            const [x, y] = params;
-            const [deltaT12, deltaT13] = deltaT;
-            const [x1, y1] = [baseStations[0].x, baseStations[0].y];
-            const [x2, y2] = [baseStations[1].x, baseStations[1].y];
-            const [x3, y3] = [baseStations[2].x, baseStations[2].y];
-
-            const errors = tdoaErrorFunc([x, y], x1, y1, x2, y2, x3, y3, deltaT12, deltaT13, c);
-            return errors[0] ** 2 + errors[1] ** 2;
+        // Loss function
+        function lossFunction(params, tdoaErrorFunc, args) {
+            const errors = tdoaErrorFunc(params, ...args);
+            return errors.reduce((sum, error) => sum + error ** 2, 0); // Sum of squared errors
         }
 
-        // Підключення до WebSocket
+        // Gradient descent for optimization
+        function customLeastSquares(tdoaErrorFunc, initialGuess, args, learningRate = 0.01, maxIterations = 10000, tolerance = 1e-12) {
+            let [x, y] = initialGuess;
+            let iteration = 0;
+            let prevLoss = Infinity;
+
+            while (iteration < maxIterations) {
+                const loss = lossFunction([x, y], tdoaErrorFunc, args);
+
+                if (Math.abs(prevLoss - loss) < tolerance) {
+                    break; // Exit condition
+                }
+
+                prevLoss = loss;
+
+                // Numerical gradient computation
+                const delta = 1e-6; // Small step for finite difference
+
+                const lossX = lossFunction([x + delta, y], tdoaErrorFunc, args);
+                const gradX = (lossX - loss) / delta;
+
+                const lossY = lossFunction([x, y + delta], tdoaErrorFunc, args);
+                const gradY = (lossY - loss) / delta;
+
+                // Update coordinates
+                x -= learningRate * gradX;
+                y -= learningRate * gradY;
+
+                iteration++;
+            }
+
+            return { x, y, iterations: iteration };
+        }
+
+        // Dummy data for testing
+        const x1 = 0, y1 = 0;
+        const x2 = 100000, y2 = 0;
+        const x3 = 0, y3 = 100000;
+
+        const deltaT12 = (1732109343768.231 - 1732109343768.2258) / 1000 * 10e8;
+        const deltaT13 = (1732109343768.231 - 1732109343768.2458) / 1000 * 10e8;
+        const c = 3e8 / 10e8;
+
+        // WebSocket connection
         const socket = new WebSocket('ws://localhost:4002');
         socket.onopen = () => console.log('Connected to WebSocket server');
-        
+
         let receivedData = [];
-        
+
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            console.log('Received data:', data);
             receivedData.push(data);
 
             if (receivedData.length === 3) {
-                const deltaT = calculateTdoaTimes(receivedData);
-                const [xOpt, yOpt] = gradientDescent(
+                receivedData.sort((a, b) => a.id.localeCompare(b.id));
+
+                const result = customLeastSquares(
                     tdoaError,
-                    [50000, 50000],
-                    baseStations,
-                    deltaT,
-                    c,
-                    0.1 // Adjust learning rate as needed
+                    [objectPosition.x, objectPosition.y], // Initial guess
+                    [
+                        baseStations[0].x, baseStations[0].y,
+                        baseStations[1].x, baseStations[1].y,
+                        baseStations[2].x, baseStations[2].y,
+                        deltaT12, deltaT13, c
+                    ]
                 );
 
-                objectPosition = { x: xOpt, y: yOpt };
+                objectPosition = { x: result.x, y: result.y };
+                console.log(`Updated position: x = ${result.x}, y = ${result.y}`);
                 updateChart(objectPosition);
-                receivedData = [];
+
+                receivedData = []; // Reset after processing
             }
         };
 
